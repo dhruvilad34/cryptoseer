@@ -1,0 +1,6 @@
+archive/
+*.keras
+__pycache__/
+.DS_Store
+*.pyc
+.ipynb_checkpoints/
