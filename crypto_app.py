@@ -819,17 +819,106 @@ with col_feat:
         st.plotly_chart(dark_fig(fig_f, 380), use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────────
-# TOMORROW'S PREDICTION
+# 7-DAY FORECAST
 # ─────────────────────────────────────────────────────────────────
-last_row       = df[FEATS].iloc[-1].values.reshape(1,-1)
-tomorrow_price = mdl.predict(scaler.transform(last_row))[0]
-chg_pct        = ((tomorrow_price - last_close)/last_close)*100
+st.markdown('<div class="sec-hdr">📆 7-DAY PRICE FORECAST</div>', unsafe_allow_html=True)
+
+forecast_prices = []
+forecast_dates  = []
+temp_df = df.copy()
+
+for day in range(7):
+    last_row_f    = temp_df[FEATS].iloc[-1].values.reshape(1,-1)
+    next_price    = mdl.predict(scaler.transform(last_row_f))[0]
+    next_date     = temp_df['Date'].iloc[-1] + pd.Timedelta(days=1)
+    forecast_prices.append(next_price)
+    forecast_dates.append(next_date)
+    # Add predicted row back for next iteration
+    new_row = temp_df.iloc[-1].copy()
+    new_row['Date']         = next_date
+    new_row['Close']        = next_price
+    new_row['Open']         = next_price
+    new_row['High']         = next_price * 1.01
+    new_row['Low']          = next_price * 0.99
+    new_row['MA_7']         = (temp_df['Close'].tail(6).sum() + next_price) / 7
+    new_row['MA_14']        = (temp_df['Close'].tail(13).sum() + next_price) / 14
+    new_row['MA_30']        = (temp_df['Close'].tail(29).sum() + next_price) / 30
+    new_row['Lag_1']        = next_price
+    new_row['Lag_2']        = temp_df['Close'].iloc[-1]
+    new_row['Lag_3']        = temp_df['Close'].iloc[-2]
+    new_row['Lag_5']        = temp_df['Close'].iloc[-4]
+    new_row['Lag_7']        = temp_df['Close'].iloc[-6]
+    new_row['Daily_Return'] = ((next_price - temp_df['Close'].iloc[-1]) / temp_df['Close'].iloc[-1]) * 100
+    temp_df = pd.concat([temp_df, new_row.to_frame().T], ignore_index=True)
+
+# Build forecast chart — last 30 actual + 7 predicted
+hist_30 = df.tail(30)
+fig_7d = go.Figure()
+fig_7d.add_trace(go.Scatter(
+    x=hist_30['Date'], y=hist_30['Close'],
+    name='Historical', line=dict(color='#00d4ff', width=2)
+))
+fig_7d.add_trace(go.Scatter(
+    x=[hist_30['Date'].iloc[-1]] + forecast_dates,
+    y=[hist_30['Close'].iloc[-1]] + forecast_prices,
+    name='7-Day Forecast',
+    line=dict(color='#ffd700', width=2.5, dash='dot'),
+    mode='lines+markers',
+    marker=dict(size=8, color='#ffd700', line=dict(color='#000', width=1))
+))
+fig_7d.add_vrect(
+    x0=hist_30['Date'].iloc[-1], x1=forecast_dates[-1],
+    fillcolor='rgba(255,215,0,0.04)', line_width=0
+)
+fig_7d.update_layout(xaxis_title='Date', yaxis_title='Price (USD)')
+st.plotly_chart(dark_fig(fig_7d, 380), use_container_width=True)
+
+# 7-day cards
+day_names = ['Tomorrow','Day 2','Day 3','Day 4','Day 5','Day 6','Day 7']
+day_cols  = st.columns(7)
+for i, (col, price, date) in enumerate(zip(day_cols, forecast_prices, forecast_dates)):
+    chg = ((price - last_close) / last_close) * 100
+    color = '#00ff99' if chg >= 0 else '#ff4466'
+    icon  = '📈' if chg >= 0 else '📉'
+    with col:
+        st.markdown(f"""
+        <div class="kpi-card" style="padding:0.8rem 0.4rem">
+            <div style="font-family:Space Mono,monospace;font-size:0.58rem;color:#3a5a7a;margin-bottom:0.3rem">
+                {date.strftime('%b %d')}
+            </div>
+            <div style="font-size:0.7rem;font-weight:700;color:#8aabcc;margin-bottom:0.2rem">{day_names[i]}</div>
+            <div style="font-weight:900;font-size:0.95rem;color:#fff;margin-bottom:0.2rem">${price:,.0f}</div>
+            <div style="font-size:0.75rem;font-weight:700;color:{color}">{icon} {chg:+.1f}%</div>
+        </div>""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────
+# TOMORROW'S PREDICTION + PRICE ALERT
+# ─────────────────────────────────────────────────────────────────
+tomorrow_price = forecast_prices[0]
+chg_pct        = ((tomorrow_price - last_close) / last_close) * 100
 is_up          = chg_pct >= 0
 chg_cls        = "pred-chg-up" if is_up else "pred-chg-down"
 chg_icon       = "📈" if is_up else "📉"
 chg_word       = "BULLISH" if is_up else "BEARISH"
 
 st.markdown('<div class="sec-hdr">🔮 TOMORROW\'S PRICE FORECAST</div>', unsafe_allow_html=True)
+
+# 🔔 Price Alert
+alert_threshold = st.slider(
+    "🔔 Price Alert Threshold — notify if predicted change exceeds:",
+    min_value=1, max_value=20, value=5, step=1,
+    help="Get an alert if the predicted % change is bigger than this"
+)
+if abs(chg_pct) >= alert_threshold:
+    alert_color = '#00ff99' if is_up else '#ff4466'
+    alert_bg    = 'rgba(0,255,153,0.08)' if is_up else 'rgba(255,68,102,0.08)'
+    st.markdown(f"""
+    <div style="background:{alert_bg};border:1px solid {alert_color};border-radius:14px;
+    padding:0.9rem 1.5rem;margin-bottom:1rem;text-align:center;
+    font-family:Space Mono,monospace;font-size:0.85rem;color:{alert_color};font-weight:700;">
+        🔔 PRICE ALERT! &nbsp;·&nbsp; {coin} predicted to move {chg_pct:+.2f}% — exceeds your {alert_threshold}% threshold!
+    </div>""", unsafe_allow_html=True)
+
 st.markdown(f"""
 <div class="pred-outer">
   <div class="pred-inner">
@@ -849,6 +938,134 @@ st.markdown(f"""
   </div>
 </div>
 """, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────
+# 💰 PORTFOLIO SIMULATOR
+# ─────────────────────────────────────────────────────────────────
+st.markdown('<div class="sec-hdr">💰 PORTFOLIO SIMULATOR</div>', unsafe_allow_html=True)
+
+col_sim1, col_sim2 = st.columns([1, 2])
+with col_sim1:
+    invest_amount = st.number_input(
+        "💵 Investment Amount (USD)",
+        min_value=100, max_value=1000000,
+        value=1000, step=100
+    )
+    invest_days = st.selectbox(
+        "📅 Investment Period",
+        ['1 Day (Tomorrow)', '7 Days', '30 Days', '90 Days', '1 Year'],
+        index=1
+    )
+
+# Calculate returns based on period
+day_map = {'1 Day (Tomorrow)':1, '7 Days':7, '30 Days':30, '90 Days':90, '1 Year':365}
+n_days  = day_map[invest_days]
+
+# Use avg daily return from forecast for extended periods
+avg_daily_chg = np.mean([(p - last_close)/last_close*100 for p in forecast_prices]) / 100
+if n_days <= 7:
+    final_price = forecast_prices[min(n_days-1, 6)]
+    final_return = (final_price - last_close) / last_close
+else:
+    final_return = (1 + avg_daily_chg) ** n_days - 1
+
+final_value  = invest_amount * (1 + final_return)
+profit_loss  = final_value - invest_amount
+is_profit    = profit_loss >= 0
+sim_color    = '#00ff99' if is_profit else '#ff4466'
+sim_bg       = 'rgba(0,255,153,0.06)' if is_profit else 'rgba(255,68,102,0.06)'
+sim_icon     = '💰' if is_profit else '📉'
+
+# Historical simulation — how $X would have grown over all time
+hist_norm   = (df['Close'] / df['Close'].iloc[0]) * invest_amount
+
+with col_sim2:
+    fig_sim = go.Figure()
+    fig_sim.add_trace(go.Scatter(
+        x=df['Date'], y=hist_norm,
+        name=f'${invest_amount:,.0f} invested at start',
+        line=dict(color='#00d4ff', width=2),
+        fill='tozeroy', fillcolor='rgba(0,212,255,0.05)'
+    ))
+    fig_sim.add_hline(
+        y=invest_amount, line_dash='dash',
+        line_color='rgba(255,255,255,0.2)', line_width=1,
+        annotation_text='Initial Investment'
+    )
+    fig_sim.update_layout(yaxis_title='Portfolio Value (USD)', showlegend=False)
+    st.plotly_chart(dark_fig(fig_sim, 280), use_container_width=True)
+
+st.markdown(f"""
+<div style="background:{sim_bg};border:1px solid {sim_color};border-radius:16px;
+padding:1.5rem 2rem;text-align:center;margin-top:0.5rem">
+    <div style="font-family:Space Mono,monospace;font-size:0.7rem;color:{sim_color};
+    letter-spacing:0.15em;text-transform:uppercase;margin-bottom:1rem">
+        {sim_icon} Portfolio Simulation · {invest_days}
+    </div>
+    <div style="display:flex;justify-content:center;gap:4rem;flex-wrap:wrap">
+        <div>
+            <div style="font-size:0.7rem;color:#3a5a7a;text-transform:uppercase;margin-bottom:0.3rem">Invested</div>
+            <div style="font-weight:900;font-size:1.8rem;color:#8aabcc">${invest_amount:,.2f}</div>
+        </div>
+        <div style="display:flex;align-items:center;font-size:1.5rem;color:#1a3a5c">→</div>
+        <div>
+            <div style="font-size:0.7rem;color:#3a5a7a;text-transform:uppercase;margin-bottom:0.3rem">Projected Value</div>
+            <div style="font-weight:900;font-size:1.8rem;color:#fff">${final_value:,.2f}</div>
+        </div>
+        <div>
+            <div style="font-size:0.7rem;color:#3a5a7a;text-transform:uppercase;margin-bottom:0.3rem">Profit / Loss</div>
+            <div style="font-weight:900;font-size:1.8rem;color:{sim_color}">{'+' if is_profit else ''}{profit_loss:,.2f}</div>
+        </div>
+        <div>
+            <div style="font-size:0.7rem;color:#3a5a7a;text-transform:uppercase;margin-bottom:0.3rem">Return</div>
+            <div style="font-weight:900;font-size:1.8rem;color:{sim_color}">{final_return*100:+.2f}%</div>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────
+# 📥 EXPORT TO CSV
+# ─────────────────────────────────────────────────────────────────
+st.markdown('<div class="sec-hdr">📥 EXPORT PREDICTIONS</div>', unsafe_allow_html=True)
+
+export_df = pd.DataFrame({
+    'Date':             [d.strftime('%Y-%m-%d') for d in forecast_dates],
+    'Day':              day_names,
+    'Predicted_Price':  [round(p, 2) for p in forecast_prices],
+    'Change_vs_Today':  [f"{((p-last_close)/last_close)*100:+.2f}%" for p in forecast_prices],
+    'Signal':           ['BULLISH 📈' if p > last_close else 'BEARISH 📉' for p in forecast_prices],
+    'Coin':             [coin] * 7,
+    'Model':            [model_name] * 7,
+    'Last_Close':       [round(last_close, 2)] * 7
+})
+
+col_ex1, col_ex2 = st.columns([2,1])
+with col_ex1:
+    st.dataframe(
+        export_df,
+        use_container_width=True,
+        hide_index=True
+    )
+with col_ex2:
+    csv_data = export_df.to_csv(index=False)
+    st.download_button(
+        label="⬇️  Download Predictions CSV",
+        data=csv_data,
+        file_name=f"{coin}_predictions_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+        mime='text/csv',
+        use_container_width=True
+    )
+    st.markdown(f"""
+    <div style="margin-top:1rem;padding:1rem;background:rgba(0,212,255,0.05);
+    border:1px solid rgba(0,212,255,0.1);border-radius:12px;
+    font-family:Space Mono,monospace;font-size:0.65rem;color:#3a6a8a;line-height:1.8">
+        📄 File: {coin}_predictions.csv<br>
+        🪙 Coin: {coin}<br>
+        🤖 Model: {model_name}<br>
+        📆 Days: 7<br>
+        💵 Last Close: ${last_close:,.2f}
+    </div>""", unsafe_allow_html=True)
 
 st.markdown("""
 <div class="disclaimer">
