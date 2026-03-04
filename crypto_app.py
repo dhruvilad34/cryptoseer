@@ -326,32 +326,54 @@ with st.sidebar:
 
     all_coins = ['BTC','ETH','BNB','ADA','SOL','XRP','DOT','DOGE','AVAX','MATIC','LTC','LINK']
 
-    app_mode = st.radio("📌 Mode", ["🔮 Single Coin", "📊 Multi-Coin Compare"], index=0)
+    app_mode = st.radio("📌 Mode", [
+        "🔮 Single Coin",
+        "📊 Multi-Coin Compare",
+        "🏆 Leaderboard",
+        "📰 Sentiment Analysis"
+    ], index=0)
     st.markdown("")
 
     if "Single" in app_mode:
         coin = st.selectbox("🪙 Select Coin", all_coins, index=0)
         compare_coins = []
-    else:
+    elif "Multi" in app_mode:
         coin = None
         compare_coins = st.multiselect(
             "🪙 Select Coins to Compare",
-            all_coins,
-            default=['BTC','ETH','SOL'],
+            all_coins, default=['BTC','ETH','SOL'],
             help="Pick 2–5 coins for best results"
         )
+    elif "Leaderboard" in app_mode:
+        coin = None
+        compare_coins = []
+        st.info("🏆 Ranks ALL available coins by predicted % gain")
+    else:  # Sentiment
+        coin = st.selectbox("🪙 Select Coin", all_coins, index=0)
+        compare_coins = []
 
-    model_choice = st.selectbox("🤖 Prediction Model", [
-        'Random Forest ⚡ (Fast)',
-        'Gradient Boosting 🎯 (Accurate)',
-        'Linear Regression 📐 (Simple)'
-    ])
+    if "Sentiment" not in app_mode:
+        model_choice = st.selectbox("🤖 Prediction Model", [
+            'Random Forest ⚡ (Fast)',
+            'Gradient Boosting 🎯 (Accurate)',
+            'Linear Regression 📐 (Simple)'
+        ])
+    else:
+        model_choice = 'Random Forest ⚡ (Fast)'
 
     st.markdown("---")
-    run_btn = st.button(
-        "🚀  Run Prediction" if "Single" in app_mode else "📊  Compare Coins",
-        use_container_width=True
-    )
+    btn_labels = {
+        "Single": "🚀  Run Prediction",
+        "Multi":  "📊  Compare Coins",
+        "Leader": "🏆  Build Leaderboard",
+        "Sentim": "📰  Analyze Sentiment"
+    }
+    mode_key = app_mode[:6].strip("🔮📊🏆📰 ")[:6]
+    btn_label = "🚀  Run" if "Single" in app_mode else \
+                "📊  Compare" if "Multi" in app_mode else \
+                "🏆  Build Leaderboard" if "Leaderboard" in app_mode else \
+                "📰  Analyze Sentiment"
+    run_btn = st.button(btn_label, use_container_width=True)
     st.markdown("---")
 
     st.markdown("""
@@ -615,6 +637,314 @@ if "Multi" in app_mode:
 
     st.markdown("""<div class="disclaimer">
     ⚠️ EDUCATIONAL PURPOSES ONLY · NOT FINANCIAL ADVICE · CRYPTO MARKETS ARE HIGHLY VOLATILE
+    </div>""", unsafe_allow_html=True)
+    st.stop()
+
+# ─────────────────────────────────────────────────────────────────
+# 🏆 LEADERBOARD MODE
+# ─────────────────────────────────────────────────────────────────
+if "Leaderboard" in app_mode:
+    st.markdown('<div class="sec-hdr">🏆 CRYPTO LEADERBOARD — PREDICTED % GAIN TOMORROW</div>', unsafe_allow_html=True)
+
+    if not run_btn:
+        st.markdown("""<div style='background:rgba(255,215,0,0.05);border:1px solid rgba(255,215,0,0.15);
+        border-radius:14px;padding:1rem 1.5rem;font-family:Space Mono,monospace;font-size:0.78rem;color:#8a7a3a;'>
+        👈 Click <strong style="color:#ffd700">🏆 Build Leaderboard</strong> to rank all coins!
+        </div>""", unsafe_allow_html=True)
+        st.stop()
+
+    FEATS_LB = ['Open','High','Low','Volume','MA_7','MA_14','MA_30',
+                'RSI_14','Daily_Return','Volatility_7','Price_Range',
+                'Lag_1','Lag_2','Lag_3','Lag_5','Lag_7']
+    lb_results = []
+    lb_coins   = [c for c in available if c in all_coins]
+    prog_lb    = st.progress(0, text="Building leaderboard...")
+
+    for idx, c in enumerate(lb_coins):
+        prog_lb.progress(int((idx+1)/len(lb_coins)*100), text=f"Predicting {c}... ({idx+1}/{len(lb_coins)})")
+        try:
+            df_c = df_raw[df_raw['Symbol']==c].sort_values('Date').reset_index(drop=True)
+            df_f = add_features(df_c)
+            if len(df_f) < 100: continue
+            X = df_f[FEATS_LB].values
+            y = df_f['Close'].values
+            X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, shuffle=False)
+            sc = MinMaxScaler()
+            mdl_lb = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+            mdl_lb.fit(sc.fit_transform(X_tr), y_tr)
+            last_c   = df_f['Close'].iloc[-1]
+            pred_c   = mdl_lb.predict(sc.transform(df_f[FEATS_LB].iloc[-1].values.reshape(1,-1)))[0]
+            chg_c    = ((pred_c - last_c) / last_c) * 100
+            acc_c    = max(0, 100 - (mean_absolute_error(y_te, mdl_lb.predict(sc.transform(X_te)))/last_c*100))
+            lb_results.append({
+                'Rank': 0,
+                'Coin': c,
+                'Emoji': COIN_EMOJI.get(c,'◆'),
+                'Last Close': round(last_c, 4),
+                'Predicted': round(pred_c, 4),
+                'Change %': round(chg_c, 2),
+                'Signal': '📈 BULLISH' if chg_c >= 0 else '📉 BEARISH',
+                'Accuracy': round(acc_c, 1),
+            })
+        except: continue
+
+    prog_lb.progress(100, text="✅ Leaderboard complete!")
+
+    lb_df = pd.DataFrame(lb_results).sort_values('Change %', ascending=False).reset_index(drop=True)
+    lb_df['Rank'] = [f"🥇" if i==0 else f"🥈" if i==1 else f"🥉" if i==2 else f"#{i+1}" for i in range(len(lb_df))]
+
+    # Top 3 podium
+    if len(lb_df) >= 3:
+        st.markdown('<div class="sec-hdr">🥇 TOP 3 PREDICTED GAINERS</div>', unsafe_allow_html=True)
+        p1, p2, p3 = st.columns(3)
+        for col, row, medal, color in zip(
+            [p1, p2, p3],
+            [lb_df.iloc[0], lb_df.iloc[1], lb_df.iloc[2]],
+            ['🥇','🥈','🥉'],
+            ['#ffd700','#c0c0c0','#cd7f32']
+        ):
+            with col:
+                st.markdown(f"""
+                <div class="kpi-card" style="border-color:rgba({int(color[1:3],16) if color.startswith('#') else 255},{int(color[3:5],16) if color.startswith('#') else 215},0,0.3);padding:1.5rem">
+                    <div style="font-size:2rem">{medal}</div>
+                    <div style="font-size:1.8rem;margin:0.3rem 0">{row['Emoji']}</div>
+                    <div style="font-weight:900;font-size:1.4rem;color:{color}">{row['Coin']}</div>
+                    <div style="font-size:0.8rem;color:#6080a0;margin:0.3rem 0">${row['Last Close']:,.4f} → <strong style="color:#fff">${row['Predicted']:,.4f}</strong></div>
+                    <div style="font-weight:900;font-size:1.5rem;color:#00ff99">+{row['Change %']:.2f}%</div>
+                    <div style="font-size:0.7rem;color:#3a6a4a;margin-top:0.3rem">Accuracy: {row['Accuracy']:.1f}%</div>
+                </div>""", unsafe_allow_html=True)
+
+    # Full leaderboard bar chart
+    st.markdown('<div class="sec-hdr">📊 ALL COINS RANKED BY PREDICTED CHANGE</div>', unsafe_allow_html=True)
+    fig_lb = go.Figure(go.Bar(
+        x=lb_df['Coin'],
+        y=lb_df['Change %'],
+        marker_color=['#00ff99' if v >= 0 else '#ff4466' for v in lb_df['Change %']],
+        marker_line_width=0,
+        text=[f"{v:+.1f}%" for v in lb_df['Change %']],
+        textposition='outside',
+        textfont=dict(size=11, color='#c8d8e8')
+    ))
+    fig_lb.add_hline(y=0, line_color='rgba(255,255,255,0.15)', line_width=1)
+    fig_lb.update_layout(xaxis_title='Coin', yaxis_title='Predicted % Change', showlegend=False)
+    st.plotly_chart(dark_fig(fig_lb, 400), use_container_width=True)
+
+    # Full table
+    st.markdown('<div class="sec-hdr">📋 FULL LEADERBOARD TABLE</div>', unsafe_allow_html=True)
+    st.dataframe(lb_df[['Rank','Emoji','Coin','Last Close','Predicted','Change %','Signal','Accuracy']],
+                 use_container_width=True, hide_index=True)
+
+    # Export leaderboard
+    csv_lb = lb_df.to_csv(index=False)
+    st.download_button("⬇️ Download Leaderboard CSV", data=csv_lb,
+                       file_name=f"crypto_leaderboard_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                       mime='text/csv')
+
+    st.markdown("""<div class="disclaimer">
+    ⚠️ EDUCATIONAL PURPOSES ONLY · NOT FINANCIAL ADVICE · CRYPTO MARKETS ARE HIGHLY VOLATILE
+    </div>""", unsafe_allow_html=True)
+    st.stop()
+
+# ─────────────────────────────────────────────────────────────────
+# 📰 SENTIMENT ANALYSIS MODE
+# ─────────────────────────────────────────────────────────────────
+if "Sentiment" in app_mode:
+    if coin not in available:
+        st.warning(f"⚠️ {coin} not found in dataset.")
+        st.stop()
+
+    COIN_NAMES = {
+        'BTC':'Bitcoin','ETH':'Ethereum','BNB':'Binance','ADA':'Cardano',
+        'SOL':'Solana','XRP':'Ripple','DOT':'Polkadot','DOGE':'Dogecoin',
+        'AVAX':'Avalanche','MATIC':'Polygon','LTC':'Litecoin','LINK':'Chainlink'
+    }
+    coin_name = COIN_NAMES.get(coin, coin)
+    emoji_c   = COIN_EMOJI.get(coin,'◆')
+
+    st.markdown(f'<div class="sec-hdr">{emoji_c} {coin} · SENTIMENT ANALYSIS</div>', unsafe_allow_html=True)
+
+    # ── Simulated sentiment data (realistic demo without API key) ──
+    # In a real app this would use NewsAPI or Twitter API
+    import random, hashlib
+    seed = int(hashlib.md5(coin.encode()).hexdigest()[:8], 16)
+    random.seed(seed)
+
+    sample_headlines = {
+        'BTC': [
+            ("Bitcoin surges past $70K as institutional demand grows", "positive"),
+            ("BTC ETF sees record inflows this week", "positive"),
+            ("Bitcoin mining difficulty hits all-time high", "neutral"),
+            ("Crypto market consolidates after recent rally", "neutral"),
+            ("Regulatory uncertainty weighs on Bitcoin price", "negative"),
+            ("Bitcoin whale wallets accumulating at current levels", "positive"),
+            ("BTC dominance rises as altcoins underperform", "neutral"),
+            ("Fed rate concerns drag Bitcoin lower", "negative"),
+        ],
+        'ETH': [
+            ("Ethereum staking rewards attract institutional investors", "positive"),
+            ("ETH gas fees drop to yearly lows", "positive"),
+            ("Ethereum DeFi TVL reaches new milestone", "positive"),
+            ("ETH/BTC ratio consolidates after breakout attempt", "neutral"),
+            ("Ethereum upgrade delayed, community debates timeline", "negative"),
+            ("Layer 2 adoption boosts Ethereum ecosystem", "positive"),
+            ("ETH futures open interest at record high", "neutral"),
+            ("Ethereum faces competition from rival L1s", "negative"),
+        ],
+    }
+    default_headlines = [
+        (f"{coin_name} shows strong on-chain activity", "positive"),
+        (f"{coin_name} price breaks key resistance level", "positive"),
+        (f"Analysts divided on {coin_name} short-term outlook", "neutral"),
+        (f"{coin_name} trading volume increases significantly", "neutral"),
+        (f"Market correction hits {coin_name} hard", "negative"),
+        (f"{coin_name} community votes on major protocol upgrade", "neutral"),
+        (f"Institutional interest in {coin_name} growing", "positive"),
+        (f"{coin_name} faces selling pressure at current levels", "negative"),
+    ]
+    headlines = sample_headlines.get(coin, default_headlines)
+    random.shuffle(headlines)
+
+    pos   = sum(1 for _, s in headlines if s == 'positive')
+    neg   = sum(1 for _, s in headlines if s == 'negative')
+    neu   = sum(1 for _, s in headlines if s == 'neutral')
+    total = len(headlines)
+    score = ((pos - neg) / total) * 100
+    overall = "🟢 BULLISH" if score > 15 else "🔴 BEARISH" if score < -15 else "🟡 NEUTRAL"
+    score_color = '#00ff99' if score > 15 else '#ff4466' if score < -15 else '#ffd700'
+
+    # Sentiment score card
+    st.markdown(f"""
+    <div class="pred-outer">
+      <div class="pred-inner">
+        <div class="pred-tag">📰 {coin} · MARKET SENTIMENT SCORE</div>
+        <div style="font-weight:900;font-size:4rem;color:{score_color};margin:0.5rem 0;line-height:1">
+            {score:+.0f}
+        </div>
+        <div style="font-size:1.2rem;font-weight:700;color:{score_color};margin-bottom:1rem">{overall}</div>
+        <div style="display:flex;justify-content:center;gap:3rem">
+            <div style="text-align:center">
+                <div style="font-size:1.5rem;font-weight:900;color:#00ff99">{pos}</div>
+                <div style="font-size:0.7rem;color:#3a6a4a;text-transform:uppercase">Positive</div>
+            </div>
+            <div style="text-align:center">
+                <div style="font-size:1.5rem;font-weight:900;color:#ffd700">{neu}</div>
+                <div style="font-size:0.7rem;color:#6a6a3a;text-transform:uppercase">Neutral</div>
+            </div>
+            <div style="text-align:center">
+                <div style="font-size:1.5rem;font-weight:900;color:#ff4466">{neg}</div>
+                <div style="font-size:0.7rem;color:#6a3a4a;text-transform:uppercase">Negative</div>
+            </div>
+        </div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Sentiment donut chart + headlines side by side
+    col_donut, col_news = st.columns([1, 2])
+    with col_donut:
+        st.markdown('<div class="sec-hdr">📊 SENTIMENT BREAKDOWN</div>', unsafe_allow_html=True)
+        fig_donut = go.Figure(go.Pie(
+            labels=['Positive','Neutral','Negative'],
+            values=[pos, neu, neg],
+            hole=0.6,
+            marker_colors=['#00ff99','#ffd700','#ff4466'],
+            textinfo='percent',
+            textfont=dict(size=13)
+        ))
+        fig_donut.update_layout(
+            showlegend=True,
+            annotations=[dict(text=f'{score:+.0f}', x=0.5, y=0.5,
+                             font=dict(size=28, color=score_color, family='Outfit'), showarrow=False)]
+        )
+        st.plotly_chart(dark_fig(fig_donut, 320), use_container_width=True)
+
+    with col_news:
+        st.markdown('<div class="sec-hdr">📰 LATEST HEADLINES</div>', unsafe_allow_html=True)
+        for headline, sentiment in headlines:
+            s_color = '#00ff99' if sentiment=='positive' else '#ff4466' if sentiment=='negative' else '#ffd700'
+            s_icon  = '🟢' if sentiment=='positive' else '🔴' if sentiment=='negative' else '🟡'
+            s_bg    = 'rgba(0,255,153,0.05)' if sentiment=='positive' else 'rgba(255,68,102,0.05)' if sentiment=='negative' else 'rgba(255,215,0,0.05)'
+            st.markdown(f"""
+            <div style="background:{s_bg};border-left:3px solid {s_color};border-radius:0 10px 10px 0;
+            padding:0.6rem 1rem;margin-bottom:0.5rem;display:flex;align-items:center;gap:0.8rem">
+                <span style="font-size:1rem">{s_icon}</span>
+                <span style="font-size:0.85rem;color:#c8d8e8">{headline}</span>
+            </div>""", unsafe_allow_html=True)
+
+    # Sentiment over time (simulated trend)
+    st.markdown('<div class="sec-hdr">📈 SENTIMENT TREND (LAST 30 DAYS)</div>', unsafe_allow_html=True)
+    dates_sent = pd.date_range(end=pd.Timestamp.now(), periods=30, freq='D')
+    random.seed(seed + 1)
+    sent_scores = [random.uniform(-60, 80) for _ in range(30)]
+    # Smooth it
+    sent_smooth = pd.Series(sent_scores).rolling(5, min_periods=1).mean().tolist()
+
+    fig_st = go.Figure()
+    fig_st.add_trace(go.Scatter(
+        x=dates_sent, y=sent_smooth, name='Sentiment Score',
+        line=dict(color=score_color, width=2.5),
+        fill='tozeroy',
+        fillcolor=f'rgba({255 if score<0 else 0},{255 if score>=0 else 0},{0 if abs(score)>15 else 153},0.06)'
+    ))
+    fig_st.add_hline(y=0, line_dash='dash', line_color='rgba(255,255,255,0.2)', line_width=1)
+    fig_st.add_hline(y=15,  line_dash='dot', line_color='rgba(0,255,153,0.3)', line_width=1, annotation_text='Bullish zone')
+    fig_st.add_hline(y=-15, line_dash='dot', line_color='rgba(255,68,102,0.3)', line_width=1, annotation_text='Bearish zone')
+    fig_st.update_layout(yaxis_title='Sentiment Score', showlegend=False)
+    st.plotly_chart(dark_fig(fig_st, 300), use_container_width=True)
+
+    # Combine sentiment + ML for enhanced signal
+    st.markdown('<div class="sec-hdr">🔮 ENHANCED SIGNAL (ML + SENTIMENT)</div>', unsafe_allow_html=True)
+    df_c   = df_raw[df_raw['Symbol']==coin].sort_values('Date').reset_index(drop=True)
+    df_f   = add_features(df_c)
+    X      = df_f[FEATS_LB if 'FEATS_LB' in dir() else ['Open','High','Low','Volume','MA_7','MA_14','MA_30','RSI_14','Daily_Return','Volatility_7','Price_Range','Lag_1','Lag_2','Lag_3','Lag_5','Lag_7']].values
+    y_v    = df_f['Close'].values
+    X_tr, X_te, y_tr, _ = train_test_split(X, y_v, test_size=0.2, shuffle=False)
+    sc_s   = MinMaxScaler()
+    mdl_s  = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+    mdl_s.fit(sc_s.fit_transform(X_tr), y_tr)
+    lc     = df_f['Close'].iloc[-1]
+    FEATS_S = ['Open','High','Low','Volume','MA_7','MA_14','MA_30','RSI_14','Daily_Return','Volatility_7','Price_Range','Lag_1','Lag_2','Lag_3','Lag_5','Lag_7']
+    pred_s = mdl_s.predict(sc_s.transform(df_f[FEATS_S].iloc[-1].values.reshape(1,-1)))[0]
+    ml_chg = ((pred_s - lc) / lc) * 100
+
+    # Combine: 70% ML + 30% sentiment
+    sent_adj   = score * 0.05   # sentiment nudge
+    combined   = ml_chg * 0.7 + sent_adj * 0.3
+    comb_color = '#00ff99' if combined >= 0 else '#ff4466'
+    comb_icon  = '📈' if combined >= 0 else '📉'
+    comb_word  = 'BULLISH' if combined >= 0 else 'BEARISH'
+
+    c1, c2, c3 = st.columns(3)
+    for col, label, val, color in zip(
+        [c1, c2, c3],
+        ['🤖 ML Signal', '📰 Sentiment Boost', '⚡ Combined Signal'],
+        [f"{ml_chg:+.2f}%", f"{sent_adj:+.2f}%", f"{combined:+.2f}%"],
+        ['#00d4ff', '#ffd700', comb_color]
+    ):
+        with col:
+            st.markdown(f"""<div class="kpi-card">
+                <div class="kpi-label">{label}</div>
+                <div style="font-weight:900;font-size:1.8rem;color:{color}">{val}</div>
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div style="margin-top:1rem;background:rgba({0 if combined>=0 else 255},{255 if combined>=0 else 0},
+    {153 if combined>=0 else 0},0.07);border:1px solid {'#00ff99' if combined>=0 else '#ff4466'};
+    border-radius:14px;padding:1rem 2rem;text-align:center">
+        <div style="font-family:Space Mono,monospace;font-size:0.7rem;color:#3a6a8a;margin-bottom:0.5rem">
+            FINAL ENHANCED PREDICTION FOR {coin} TOMORROW
+        </div>
+        <div style="font-weight:900;font-size:2.5rem;color:#fff">${pred_s:,.2f}</div>
+        <div style="font-weight:700;font-size:1.2rem;color:{comb_color};margin-top:0.3rem">
+            {comb_icon} {combined:+.2f}% · {comb_word} SIGNAL
+        </div>
+        <div style="font-size:0.7rem;color:#2a4a6a;margin-top:0.5rem">
+            Based on ML prediction ({ml_chg:+.2f}%) adjusted by sentiment score ({score:+.0f})
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("""<div class="disclaimer">
+    ⚠️ EDUCATIONAL PURPOSES ONLY · NOT FINANCIAL ADVICE · SENTIMENT DATA IS SIMULATED FOR DEMO
     </div>""", unsafe_allow_html=True)
     st.stop()
 
